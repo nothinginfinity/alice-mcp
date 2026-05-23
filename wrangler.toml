@@ -1,0 +1,11 @@
+name = "alice-mcp"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+[vars]
+GITHUB_OWNER = "nothinginfinity"
+GITHUB_REPO_BRIDGE = "agent-bridge"
+AFO_BASE_URL = "https://afo-toolsmith.agentfeedoptimization.com"
+
+# Secrets (set via wrangler secret put):
+# GITHUB_TOKEN
