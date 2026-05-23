@@ -190,6 +190,12 @@ const TOOLS = [
   }
 ];
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, Mcp-Session-Id",
+};
+
 async function handleTool(name: string, args: Record<string, unknown>, env: Env): Promise<unknown> {
   const githubHeaders = {
     "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
@@ -370,10 +376,76 @@ async function handleTool(name: string, args: Record<string, unknown>, env: Env)
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const origin = request.headers.get("Origin") ?? "*";
+
+    // CORS preflight — Perplexity sends OPTIONS before every request
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": origin,
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization, Mcp-Session-Id",
+          "Access-Control-Max-Age": "86400",
+        }
+      });
+    }
+
+    // OAuth Protected Resource Metadata — required by Perplexity MCP client
+    // Returns "no auth required" so registration succeeds without OAuth flow
+    if (url.pathname === "/.well-known/oauth-protected-resource") {
+      return Response.json(
+        {
+          resource: `${url.origin}/mcp`,
+          authorization_servers: [],
+          bearer_methods_supported: [],
+          resource_documentation: `${url.origin}/`
+        },
+        { headers: { ...CORS_HEADERS, "Cache-Control": "public, max-age=3600" } }
+      );
+    }
+
+    // OAuth Authorization Server Metadata — Perplexity falls back to this
+    // Declares no auth required (no token endpoint, no grants)
+    if (url.pathname === "/.well-known/oauth-authorization-server") {
+      return Response.json(
+        {
+          issuer: url.origin,
+          authorization_endpoint: `${url.origin}/oauth/authorize`,
+          token_endpoint: `${url.origin}/oauth/token`,
+          response_types_supported: ["code"],
+          grant_types_supported: [],
+          token_endpoint_auth_methods_supported: ["none"],
+          registration_endpoint: `${url.origin}/oauth/register`,
+          scopes_supported: [],
+          code_challenge_methods_supported: ["S256"]
+        },
+        { headers: { ...CORS_HEADERS, "Cache-Control": "public, max-age=3600" } }
+      );
+    }
+
+    // OAuth Dynamic Client Registration — Perplexity tries to auto-register
+    // Accept any registration and return a static client_id
+    if (url.pathname === "/oauth/register" && request.method === "POST") {
+      return Response.json(
+        {
+          client_id: "perplexity-alice-mcp",
+          client_secret: null,
+          client_id_issued_at: Math.floor(Date.now() / 1000),
+          grant_types: ["authorization_code"],
+          redirect_uris: [],
+          token_endpoint_auth_method: "none"
+        },
+        { status: 201, headers: CORS_HEADERS }
+      );
+    }
 
     // Health check
     if (url.pathname === "/" && request.method === "GET") {
-      return Response.json({ name: "alice-mcp", version: "1.1.0", tools: TOOLS.map(t => t.name) });
+      return Response.json(
+        { name: "alice-mcp", version: "1.2.0", tools: TOOLS.map(t => t.name) },
+        { headers: CORS_HEADERS }
+      );
     }
 
     // MCP endpoint
@@ -382,27 +454,27 @@ export default {
       try {
         body = await request.json();
       } catch {
-        return Response.json({ jsonrpc: "2.0", error: { code: -32700, message: "Parse error" }, id: null }, { status: 400 });
+        return Response.json({ jsonrpc: "2.0", error: { code: -32700, message: "Parse error" }, id: null }, { status: 400, headers: CORS_HEADERS });
       }
 
       const { method, id, params } = body;
 
       if (method === "tools/list") {
-        return Response.json({ jsonrpc: "2.0", id, result: { tools: TOOLS } });
+        return Response.json({ jsonrpc: "2.0", id, result: { tools: TOOLS } }, { headers: CORS_HEADERS });
       }
 
       if (method === "tools/call") {
         const toolName = params?.name;
         const toolArgs = (params?.arguments ?? {}) as Record<string, unknown>;
         if (!toolName) {
-          return Response.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Missing tool name" } });
+          return Response.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Missing tool name" } }, { headers: CORS_HEADERS });
         }
         try {
           const result = await handleTool(toolName, toolArgs, env);
-          return Response.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] } });
+          return Response.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] } }, { headers: CORS_HEADERS });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          return Response.json({ jsonrpc: "2.0", id, error: { code: -32603, message: msg } });
+          return Response.json({ jsonrpc: "2.0", id, error: { code: -32603, message: msg } }, { headers: CORS_HEADERS });
         }
       }
 
@@ -412,14 +484,14 @@ export default {
           result: {
             protocolVersion: "2024-11-05",
             capabilities: { tools: {} },
-            serverInfo: { name: "alice-mcp", version: "1.1.0" }
+            serverInfo: { name: "alice-mcp", version: "1.2.0" }
           }
-        });
+        }, { headers: CORS_HEADERS });
       }
 
-      return Response.json({ jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown method: ${method}` } });
+      return Response.json({ jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown method: ${method}` } }, { headers: CORS_HEADERS });
     }
 
-    return new Response("Not found", { status: 404 });
+    return new Response("Not found", { status: 404, headers: CORS_HEADERS });
   }
 };
